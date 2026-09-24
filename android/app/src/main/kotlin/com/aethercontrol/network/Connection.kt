@@ -85,11 +85,11 @@ class Connection(
 
     // ── Connection lifecycle ───────────────────────────────────────────────
 
-    suspend fun connect(): Boolean {
-        if (running.getAndSet(true)) return false
+    suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
+        if (running.getAndSet(true)) return@withContext false
         _state.value = ConnectionState.CONNECTING
 
-        return try {
+        try {
             Log.i(TAG, "Connecting to ${info.host}:${info.controlPort}")
             val sock = Socket()
             sock.connect(InetSocketAddress(info.host, info.controlPort), 10_000)
@@ -110,7 +110,7 @@ class Connection(
                 false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Connection failed: ${e.message}")
+            Log.e(TAG, "Connection failed: ${e.message}", e)
             _state.value = ConnectionState.ERROR
             running.set(false)
             false

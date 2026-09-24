@@ -84,6 +84,16 @@ fun HomeScreen(
                 }
             }
 
+            // ── Error connection banner ──────────────────────────────────────
+            if (connectionState == ConnectionState.ERROR) {
+                item {
+                    ErrorBanner(
+                        message = "Couldn't connect to PC. Make sure AetherControl is running on the PC and both devices are on the same network.",
+                        onDismiss = { networkManager.disconnect() }
+                    )
+                }
+            }
+
             // ── Computers ────────────────────────────────────────────────────
             item {
                 SectionHeader(text = "My Computers")
@@ -95,10 +105,14 @@ fun HomeScreen(
                 }
             } else {
                 items(discovered, key = { it.id }) { computer ->
+                    val isThisTarget = connectedComputer?.id == computer.id
+                    val isConnected = isThisTarget && connectionState == ConnectionState.CONNECTED
+                    val isConnecting = isThisTarget && connectionState == ConnectionState.CONNECTING
+
                     ComputerCard(
                         computer = computer,
-                        isConnected = connectedComputer?.id == computer.id &&
-                                connectionState == ConnectionState.CONNECTED,
+                        isConnected = isConnected,
+                        isConnecting = isConnecting,
                         onConnect = { networkManager.connectTo(computer) },
                         onDisconnect = { networkManager.disconnect() },
                     )
@@ -191,9 +205,47 @@ fun ConnectedBanner(computer: ComputerInfo, onDisconnect: () -> Unit) {
 }
 
 @Composable
+fun ErrorBanner(message: String, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(AetherColors.Error.copy(alpha = 0.15f))
+            .border(1.dp, AetherColors.Error.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.ErrorOutline,
+            contentDescription = null,
+            tint = AetherColors.Error,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Connection Failed",
+                color = AetherColors.Error,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                message,
+                color = AetherColors.TextSecondary,
+                fontSize = 12.sp,
+            )
+        }
+        IconButton(onClick = onDismiss) {
+            Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = AetherColors.TextSecondary)
+        }
+    }
+}
+
+@Composable
 fun ComputerCard(
     computer: ComputerInfo,
     isConnected: Boolean,
+    isConnecting: Boolean = false,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -238,11 +290,21 @@ fun ComputerCard(
                         Modifier
                             .size(6.dp)
                             .clip(CircleShape)
-                            .background(if (isConnected) AetherColors.Success else AetherColors.TextMuted)
+                            .background(
+                                when {
+                                    isConnected -> AetherColors.Success
+                                    isConnecting -> AetherColors.Warning
+                                    else -> AetherColors.TextMuted
+                                }
+                            )
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        if (isConnected) "Connected" else "${computer.host}:${computer.controlPort}",
+                        when {
+                            isConnected -> "Connected"
+                            isConnecting -> "Connecting..."
+                            else -> "${computer.host}:${computer.controlPort}"
+                        },
                         color = AetherColors.TextSecondary,
                         fontSize = 12.sp,
                     )
@@ -251,6 +313,21 @@ fun ComputerCard(
             if (isConnected) {
                 TextButton(onClick = onDisconnect) {
                     Text("Disconnect", color = AetherColors.TextSecondary, fontSize = 12.sp)
+                }
+            } else if (isConnecting) {
+                Button(
+                    onClick = {},
+                    enabled = false,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AetherColors.SurfaceVariant),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        color = AetherColors.Primary,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Connecting", fontSize = 12.sp)
                 }
             } else {
                 Button(
@@ -325,7 +402,6 @@ fun RemoteModesGrid(onNavigate: (String) -> Unit) {
                         onClick = { onNavigate(mode.route) },
                     )
                 }
-                // Fill remaining slots if row is not full
                 repeat(4 - row.size) {
                     Spacer(Modifier.weight(1f))
                 }
