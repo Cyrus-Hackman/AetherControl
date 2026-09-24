@@ -25,7 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "server_name": os.uname().nodename,
 
     # Security
-    "require_pairing": True,
+    "require_pairing": False,
     "pairing_timeout_seconds": 60,
 
     # Input permissions (per-session defaults; individual devices can override)

@@ -52,6 +52,7 @@ class AetherApp:
         self.pairing = PairingManager(
             storage=self.device_storage,
             timeout_seconds=self.config.get("pairing_timeout_seconds", 60),
+            require_pairing=self.config.get("require_pairing", False),
         )
 
         self.dispatcher = Dispatcher()

@@ -103,10 +103,12 @@ class PairingManager:
         storage: DeviceStorage,
         timeout_seconds: float = 60.0,
         default_permissions: int = Capability.ALL,
+        require_pairing: bool = False,
     ) -> None:
         self._storage = storage
         self._timeout = timeout_seconds
         self._default_perms = default_permissions
+        self._require_pairing = require_pairing
         self._server_key = load_or_generate_server_identity()
         self._server_pub_bytes = public_key_to_bytes(self._server_key.public_key())
         self._pending: dict[str, PendingPairing] = {}  # device_id → pending
@@ -147,7 +149,7 @@ class PairingManager:
         # Already trusted?
         existing = self._storage.get(device_id)
         if existing and not existing.revoked:
-            log.warning(
+            log.info(
                 "Pairing request from already-trusted device %s (%s) — re-pairing",
                 device_name, device_id,
             )
@@ -181,8 +183,10 @@ class PairingManager:
             device_name, device_id, address, pairing_code,
         )
 
-        # Notify UI
-        if self.on_pairing_request:
+        if not self._require_pairing:
+            log.info("Auto-confirming pairing request for '%s'", device_name)
+            pending.confirm()
+        elif self.on_pairing_request:
             await self.on_pairing_request(pending)
 
         accepted = await pending.wait_for_user()
