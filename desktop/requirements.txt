@@ -1,0 +1,28 @@
+# AetherControl Desktop Server - Python Dependencies
+# Python 3.11+ required
+
+# UI Framework
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+qasync>=0.27.1          # asyncio integration for PyQt6
+
+# Networking & Protocol
+msgpack>=1.0.7           # Binary serialization (protocol codec)
+cryptography>=41.0.0     # TLS, ECDH, HMAC
+zeroconf>=0.128.0        # mDNS/Bonjour discovery
+
+# Input Backend
+python-uinput>=0.11.2    # uinput wrapper for virtual input devices
+
+# Screen Capture - X11
+mss>=9.0.1               # Fast X11 screen capture
+
+# Video Encoding
+av>=11.0.0               # PyAV - ffmpeg bindings for H.264 encoding
+
+# System Integration
+psutil>=5.9.0            # System info, process management
+
+# Utilities
+numpy>=1.24.0            # Frame processing
+Pillow>=10.0.0           # Image processing for screen frames

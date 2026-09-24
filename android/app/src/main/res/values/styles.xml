@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.AetherControl" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:statusBarColor">#000000</item>
+    </style>
+</resources>
