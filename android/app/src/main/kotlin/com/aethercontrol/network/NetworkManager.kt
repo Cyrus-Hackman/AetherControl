@@ -27,6 +27,9 @@ class NetworkManager : ViewModel() {
     private val _connectedComputer = MutableStateFlow<ComputerInfo?>(null)
     val connectedComputer: StateFlow<ComputerInfo?> = _connectedComputer
 
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage
+
     // Static device ID (should be persisted in DataStore in a full implementation)
     val deviceId: String = java.util.UUID.randomUUID().toString()
     val deviceName: String = android.os.Build.MODEL
@@ -50,6 +53,7 @@ class NetworkManager : ViewModel() {
     fun connectTo(computer: ComputerInfo) {
         viewModelScope.launch {
             _connectionState.value = ConnectionState.CONNECTING
+            _errorMessage.value = null
             val conn = Connection(
                 info = computer,
                 deviceId = deviceId,
@@ -64,6 +68,7 @@ class NetworkManager : ViewModel() {
                     _connectionState.value = state
                 }
             } else {
+                _errorMessage.value = conn.lastErrorMessage.value ?: "Could not connect to ${computer.name}. Check that AetherControl is running on the PC and both devices are on the same network."
                 _connectionState.value = ConnectionState.ERROR
                 _currentConnection = null
             }
@@ -74,6 +79,7 @@ class NetworkManager : ViewModel() {
         _currentConnection?.disconnect()
         _currentConnection = null
         _connectedComputer.value = null
+        _errorMessage.value = null
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 

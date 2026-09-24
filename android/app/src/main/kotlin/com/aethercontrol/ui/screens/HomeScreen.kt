@@ -33,6 +33,7 @@ fun HomeScreen(
     val discovered by networkManager.discoveredComputers.collectAsState()
     val connectionState by networkManager.connectionState.collectAsState()
     val connectedComputer by networkManager.connectedComputer.collectAsState()
+    val errorMessage by networkManager.errorMessage.collectAsState()
     var showManualDialog by remember { mutableStateOf(false) }
 
     Box(
@@ -88,7 +89,7 @@ fun HomeScreen(
             if (connectionState == ConnectionState.ERROR) {
                 item {
                     ErrorBanner(
-                        message = "Couldn't connect to PC. Make sure AetherControl is running on the PC and both devices are on the same network.",
+                        message = errorMessage ?: "Connection failed. Please check network and server status.",
                         onDismiss = { networkManager.disconnect() }
                     )
                 }

@@ -57,6 +57,9 @@ class Connection(
     private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
     val state: StateFlow<ConnectionState> = _state
 
+    private val _lastErrorMessage = MutableStateFlow<String?>(null)
+    val lastErrorMessage: StateFlow<String?> = _lastErrorMessage
+
     private val _messages = Channel<AetherMessage>(Channel.UNLIMITED)
     val messages: ReceiveChannel<AetherMessage> = _messages
 
@@ -88,6 +91,7 @@ class Connection(
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         if (running.getAndSet(true)) return@withContext false
         _state.value = ConnectionState.CONNECTING
+        _lastErrorMessage.value = null
 
         try {
             Log.i(TAG, "Connecting to ${info.host}:${info.controlPort}")
@@ -111,6 +115,7 @@ class Connection(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Connection failed: ${e.message}", e)
+            _lastErrorMessage.value = "Could not connect to ${info.name} (${info.host}:${info.controlPort}): ${e.localizedMessage ?: "Host unreachable"}"
             _state.value = ConnectionState.ERROR
             running.set(false)
             false
@@ -120,9 +125,14 @@ class Connection(
     private suspend fun doHandshake(stream: InputStream): Boolean = withContext(Dispatchers.IO) {
         try {
             // Read HELLO
-            val hello = readOneFrame(stream) ?: return@withContext false
+            val hello = readOneFrame(stream)
+            if (hello == null) {
+                _lastErrorMessage.value = "Handshake failed: No HELLO frame received from ${info.name}."
+                return@withContext false
+            }
             if (hello.type != Protocol.MsgType.HELLO) {
                 Log.e(TAG, "Expected HELLO, got type 0x${hello.type.toString(16)}")
+                _lastErrorMessage.value = "Protocol error: expected HELLO from server, got 0x${hello.type.toString(16)}"
                 return@withContext false
             }
             val serverNonce = Base64.getDecoder().decode(hello.payload["nonce"] as? String ?: "")
@@ -140,7 +150,11 @@ class Connection(
             sendEncoded(Protocol.MsgType.PAIR_REQUEST, pairReq)
 
             // Wait for PAIR_CONFIRM or PAIR_REJECT
-            val response = readOneFrame(stream) ?: return@withContext false
+            val response = readOneFrame(stream)
+            if (response == null) {
+                _lastErrorMessage.value = "Handshake error: could not decode response frame from ${info.name}."
+                return@withContext false
+            }
             return@withContext when (response.type) {
                 Protocol.MsgType.PAIR_CONFIRM -> {
                     Log.i(TAG, "Pairing confirmed")
@@ -149,16 +163,20 @@ class Connection(
                     true
                 }
                 Protocol.MsgType.PAIR_REJECT -> {
-                    Log.w(TAG, "Pairing rejected: ${response.payload["reason"]}")
+                    val reason = response.payload["reason"] as? String ?: "Pairing declined"
+                    Log.w(TAG, "Pairing rejected: $reason")
+                    _lastErrorMessage.value = "Pairing rejected by ${info.name}: $reason"
                     false
                 }
                 else -> {
                     Log.e(TAG, "Unexpected response during handshake: 0x${response.type.toString(16)}")
+                    _lastErrorMessage.value = "Unexpected response during handshake: 0x${response.type.toString(16)}"
                     false
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Handshake failed: ${e.message}")
+            _lastErrorMessage.value = "Handshake failed: ${e.localizedMessage}"
             false
         }
     }

@@ -193,8 +193,6 @@ class AetherServer:
             await session.send_error(ErrorCode.AUTH_FAILED, "Key derivation failed")
             return
 
-        session.set_session_key(session_key)
-
         # Negotiate capabilities
         client_caps = payload.get("capabilities", int(Capability.ALL))
         server_caps = int(Capability.ALL)
@@ -205,6 +203,9 @@ class AetherServer:
             "capabilities": effective,
             "client_nonce": client_nonce_b64,
         })
+
+        # Switch to session key AFTER sending CAPABILITIES response
+        session.set_session_key(session_key)
 
         await session.start_heartbeat()
 
@@ -256,8 +257,6 @@ class AetherServer:
         client_pub = public_key_from_bytes(client_pub_bytes)
         final_key = ecdh_derive_session_key(server_key, client_pub, salt=combined_nonce)
 
-        session.set_session_key(final_key)
-
         server_caps = int(Capability.ALL)
         effective = server_caps & device.permissions
         session.activate(device, effective)
@@ -266,6 +265,9 @@ class AetherServer:
             "capabilities": effective,
             "device_name": self._config.get("server_name", "AetherControl"),
         })
+
+        # Only now switch to the shared session key for everything that follows
+        session.set_session_key(final_key)
 
         await session.start_heartbeat()
 
