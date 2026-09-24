@@ -121,6 +121,22 @@ class NetworkManager : ViewModel() {
         Protocol.MsgType.SYSTEM_COMMAND, mapOf("action" to action) + extra
     )
 
+    fun sendMouseMoveAbs(x: Int, y: Int, xRatio: Float? = null, yRatio: Float? = null) {
+        val payload = mutableMapOf<String, Any?>("x" to x, "y" to y)
+        if (xRatio != null) payload["x_ratio"] = xRatio
+        if (yRatio != null) payload["y_ratio"] = yRatio
+        send(Protocol.MsgType.MOUSE_MOVE_ABS, payload)
+    }
+
+    val messagesFlow: Flow<AetherMessage> = connectionState
+        .flatMapLatest { state ->
+            if (state == ConnectionState.CONNECTED) {
+                _currentConnection?.messagesFlow ?: emptyFlow()
+            } else {
+                emptyFlow()
+            }
+        }
+
     fun requestScreenStream(quality: String = "medium", fps: Int = 30) = send(
         Protocol.MsgType.SCREEN_START, mapOf("quality" to quality, "fps" to fps)
     )

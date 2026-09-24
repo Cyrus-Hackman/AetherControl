@@ -26,10 +26,10 @@ log = logging.getLogger("aether.display.encoder")
 
 
 QUALITY_PRESETS = {
-    "low":     {"crf": 35, "fps": 24, "scale": 0.5},
-    "medium":  {"crf": 28, "fps": 30, "scale": 0.75},
-    "high":    {"crf": 22, "fps": 30, "scale": 1.0},
-    "maximum": {"crf": 18, "fps": 60, "scale": 1.0},
+    "low":     {"jpeg_quality": 50, "fps": 24, "scale": 0.5},
+    "medium":  {"jpeg_quality": 70, "fps": 30, "scale": 0.75},
+    "high":    {"jpeg_quality": 82, "fps": 30, "scale": 1.0},
+    "maximum": {"jpeg_quality": 92, "fps": 60, "scale": 1.0},
 }
 
 RESOLUTION_MAP = {
@@ -40,7 +40,7 @@ RESOLUTION_MAP = {
 
 
 class EncodedFrame:
-    __slots__ = ("data", "sequence", "is_keyframe", "timestamp", "width", "height")
+    __slots__ = ("data", "sequence", "is_keyframe", "timestamp", "width", "height", "format")
 
     def __init__(
         self,
@@ -50,6 +50,7 @@ class EncodedFrame:
         timestamp: float,
         width: int,
         height: int,
+        format: str = "jpeg",
     ) -> None:
         self.data = data
         self.sequence = sequence
@@ -57,11 +58,13 @@ class EncodedFrame:
         self.timestamp = timestamp
         self.width = width
         self.height = height
+        self.format = format
 
 
 class StreamEncoder:
     """
-    Manages the encoding pipeline from raw frames to H.264 network packets.
+    Manages the encoding pipeline from raw frames to low-latency network packets.
+    Encodes using fast JPEG by default for instant cross-platform hardware/software decoding.
     """
 
     def __init__(
@@ -76,12 +79,9 @@ class StreamEncoder:
         self.fps = fps
         self.use_hw_accel = use_hw_accel
 
-        self._codec = None
-        self._container = None
-        self._stream = None
-        self._av = None
         self._sequence = 0
         self._running = False
+        self._jpeg_quality = 70
 
         # Adaptive quality
         self._target_fps = fps
@@ -89,30 +89,22 @@ class StreamEncoder:
 
     async def start(self, width: int, height: int) -> None:
         """Initialize the encoder for the given frame dimensions."""
-        try:
-            import av
-            self._av = av
-        except ImportError:
-            raise RuntimeError("PyAV (av) not installed — video encoding unavailable")
-
         preset = QUALITY_PRESETS.get(self.quality, QUALITY_PRESETS["medium"])
         target_res = RESOLUTION_MAP.get(self.resolution)
 
         if target_res:
             self._out_width, self._out_height = target_res
         else:
-            self._out_width, self._out_height = width, height
+            scale = preset.get("scale", 1.0)
+            self._out_width = int(width * scale) & ~1
+            self._out_height = int(height * scale) & ~1
 
-        # Ensure dimensions are divisible by 2 (H.264 requirement)
-        self._out_width  = self._out_width  & ~1
-        self._out_height = self._out_height & ~1
-
-        self._crf = preset["crf"]
+        self._jpeg_quality = preset.get("jpeg_quality", 70)
         self._running = True
 
         log.info(
-            "Encoder started: %dx%d @ %d fps, quality=%s, hw_accel=%s",
-            self._out_width, self._out_height, self.fps, self.quality, self.use_hw_accel,
+            "Encoder started: %dx%d @ %d fps, quality=%s (jpeg_quality=%d)",
+            self._out_width, self._out_height, self.fps, self.quality, self._jpeg_quality,
         )
 
     async def stop(self) -> None:
@@ -120,60 +112,46 @@ class StreamEncoder:
 
     def encode_frame(self, frame: np.ndarray) -> Optional[EncodedFrame]:
         """
-        Encode one BGRA numpy frame to H.264.
+        Encode one BGRA numpy frame to JPEG.
         Returns an EncodedFrame or None if encoding fails.
         """
-        if not self._running or self._av is None:
+        if not self._running or frame is None:
             return None
 
         try:
-            import av
             import io
+            from PIL import Image
 
-            # Convert BGRA → YUV420P (required by H.264)
             bgra = frame
             h, w = bgra.shape[:2]
 
+            # Fast RGB conversion (BGRA -> RGB)
+            rgb = bgra[:, :, :3][..., ::-1]
+
             # Scale if needed
             if (w, h) != (self._out_width, self._out_height):
-                from PIL import Image
-                img = Image.fromarray(bgra[:, :, :3][..., ::-1])  # BGRA→RGB
-                img = img.resize((self._out_width, self._out_height), Image.LANCZOS)
-                bgra = np.array(img)[:, :, ::-1]   # RGB→BGR
-                h, w = self._out_height, self._out_width
+                if w // 2 == self._out_width and h // 2 == self._out_height:
+                    rgb = rgb[::2, ::2]
+                else:
+                    img = Image.fromarray(rgb)
+                    img = img.resize((self._out_width, self._out_height), Image.BILINEAR)
+                    rgb = np.array(img)
 
-            # Build YUV frame
-            av_frame = av.VideoFrame.from_ndarray(
-                bgra[:, :, :3][..., ::-1],   # BGR → RGB
-                format="rgb24"
-            )
-            av_frame = av_frame.reformat(format="yuv420p")
-
-            # Encode using in-memory codec
+            img = Image.fromarray(rgb)
             buf = io.BytesIO()
-            output = av.open(buf, mode="w", format="h264")
-            stream = output.add_stream("libx264", rate=self.fps)
-            stream.width = w
-            stream.height = h
-            stream.pix_fmt = "yuv420p"
-            stream.options = {
-                "crf": str(self._crf),
-                "preset": "ultrafast",
-                "tune": "zerolatency",
-                "x264-params": "keyint=60:min-keyint=30",
-            }
+            img.save(buf, format="JPEG", quality=self._jpeg_quality, optimize=False)
+            buf_data = buf.getvalue()
 
-            for packet in stream.encode(av_frame):
-                buf_data = bytes(packet)
-                self._sequence += 1
-                return EncodedFrame(
-                    data=buf_data,
-                    sequence=self._sequence,
-                    is_keyframe=packet.is_keyframe,
-                    timestamp=time.monotonic(),
-                    width=w,
-                    height=h,
-                )
+            self._sequence += 1
+            return EncodedFrame(
+                data=buf_data,
+                sequence=self._sequence,
+                is_keyframe=True,
+                timestamp=time.monotonic(),
+                width=self._out_width,
+                height=self._out_height,
+                format="jpeg",
+            )
         except Exception as exc:
             log.debug("Encode error: %s", exc)
             return None
@@ -188,12 +166,13 @@ class StreamEncoder:
             current_idx = qualities.index(self.quality)
             if current_idx > 0:
                 self.quality = qualities[current_idx - 1]
-                self._crf = QUALITY_PRESETS[self.quality]["crf"]
+                self._jpeg_quality = QUALITY_PRESETS[self.quality]["jpeg_quality"]
                 log.info("Adaptive quality: downgraded to %s", self.quality)
         elif network_rtt_ms < 50 and frame_loss_rate < 0.01:
             qualities = list(QUALITY_PRESETS.keys())
             current_idx = qualities.index(self.quality)
             if current_idx < len(qualities) - 1:
                 self.quality = qualities[current_idx + 1]
-                self._crf = QUALITY_PRESETS[self.quality]["crf"]
+                self._jpeg_quality = QUALITY_PRESETS[self.quality]["jpeg_quality"]
                 log.info("Adaptive quality: upgraded to %s", self.quality)
+

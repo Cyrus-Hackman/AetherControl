@@ -63,6 +63,12 @@ class Connection(
     private val _messages = Channel<AetherMessage>(Channel.UNLIMITED)
     val messages: ReceiveChannel<AetherMessage> = _messages
 
+    private val _messagesFlow = MutableSharedFlow<AetherMessage>(
+        extraBufferCapacity = 128,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val messagesFlow: SharedFlow<AetherMessage> = _messagesFlow.asSharedFlow()
+
     private val running = AtomicBoolean(false)
     private var heartbeatJob: Job? = null
 
@@ -236,7 +242,10 @@ class Connection(
                 frameBuffer.getFrames().forEach { msg ->
                     when (msg.type) {
                         Protocol.MsgType.HEARTBEAT -> sendEncoded(Protocol.MsgType.HEARTBEAT, mapOf("ts" to System.currentTimeMillis()))
-                        else -> _messages.trySend(msg)
+                        else -> {
+                            _messages.trySend(msg)
+                            _messagesFlow.tryEmit(msg)
+                        }
                     }
                 }
             } catch (e: Exception) {

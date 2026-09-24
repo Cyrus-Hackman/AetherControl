@@ -61,14 +61,28 @@ class MouseHandler:
         self._backend.mouse_scroll(int(dx), int(dy))
 
     async def handle_move_abs(self, session, payload: dict) -> None:
-        # Absolute position used for remote desktop
-        # Converted to relative movement from last known position
-        # (In practice, remote desktop sends absolute positions relative to screen)
-        x = payload.get("x", 0)
-        y = payload.get("y", 0)
-        # TODO: For true absolute mouse, use EV_ABS device instead.
-        # For now, forward as-is — the remote desktop handler converts coordinates
-        self._backend.mouse_move_rel(int(x), int(y))
+        x = payload.get("x")
+        y = payload.get("y")
+        x_ratio = payload.get("x_ratio")
+        y_ratio = payload.get("y_ratio")
+
+        if x_ratio is not None and y_ratio is not None:
+            try:
+                import mss
+                mon = mss.mss().monitors[1]
+                x = int(float(x_ratio) * mon["width"])
+                y = int(float(y_ratio) * mon["height"])
+            except Exception:
+                x = int(float(x_ratio) * 1920)
+                y = int(float(y_ratio) * 1080)
+
+        if x is not None and y is not None:
+            try:
+                import subprocess
+                subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], check=False)
+            except Exception:
+                self._backend.mouse_move_rel(int(x), int(y))
+
 
 
 class KeyboardHandler:

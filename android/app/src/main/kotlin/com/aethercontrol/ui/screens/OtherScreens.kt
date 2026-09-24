@@ -1,6 +1,11 @@
 package com.aethercontrol.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
+import android.util.Log
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -11,14 +16,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aethercontrol.network.NetworkManager
+import com.aethercontrol.network.Protocol
 import com.aethercontrol.ui.theme.AetherColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MediaScreen(networkManager: NetworkManager, onBack: () -> Unit) {
@@ -231,40 +244,284 @@ fun SystemActionBtn(label: String, color: Color, isDangerous: Boolean, onClick: 
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var remoteWidth by remember { mutableStateOf(1920) }
+    var remoteHeight by remember { mutableStateOf(1080) }
+    var selectedQuality by remember { mutableStateOf("medium") }
+    var fps by remember { mutableStateOf(0) }
+    var frameCounter by remember { mutableStateOf(0) }
+    var isConnecting by remember { mutableStateOf(true) }
+    var showControls by remember { mutableStateOf(true) }
+    var showKeyboard by remember { mutableStateOf(false) }
+    var textInput by remember { mutableStateOf("") }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Measure FPS
     LaunchedEffect(Unit) {
-        networkManager.requestScreenStream()
+        var lastTime = System.currentTimeMillis()
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            val now = System.currentTimeMillis()
+            val elapsed = (now - lastTime) / 1000f
+            if (elapsed > 0) {
+                fps = (frameCounter / elapsed).toInt()
+                frameCounter = 0
+            }
+            lastTime = now
+        }
     }
+
+    // Request stream & process incoming frames
+    LaunchedEffect(selectedQuality) {
+        networkManager.requestScreenStream(selectedQuality, 30)
+    }
+
     DisposableEffect(Unit) {
         onDispose { networkManager.stopScreenStream() }
+    }
+
+    LaunchedEffect(Unit) {
+        networkManager.messagesFlow.collect { msg ->
+            if (msg.type == Protocol.MsgType.SCREEN_FRAME) {
+                val dataStr = msg.payload["data"] as? String ?: return@collect
+                val w = (msg.payload["w"] as? Number)?.toInt() ?: 1920
+                val h = (msg.payload["h"] as? Number)?.toInt() ?: 1080
+                withContext(Dispatchers.Default) {
+                    val decodedBitmap = try {
+                        val bytes = Base64.decode(dataStr, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    } catch (e: Exception) {
+                        Log.e("RemoteDesktop", "Frame decode error: ${e.message}")
+                        null
+                    }
+                    if (decodedBitmap != null) {
+                        withContext(Dispatchers.Main) {
+                            bitmap = decodedBitmap
+                            remoteWidth = w
+                            remoteHeight = h
+                            isConnecting = false
+                            frameCounter++
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(AetherColors.Background),
-        contentAlignment = Alignment.Center,
+            .background(Color.Black)
+            .onGloballyPositioned { containerSize = it.size }
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                "Remote Desktop",
-                color = AetherColors.TextPrimary,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(16.dp))
-            CircularProgressIndicator(color = AetherColors.Primary)
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Connecting to stream...\n\nStage 4 feature — video decoding\nwill be implemented using MediaCodec.",
-                color = AetherColors.TextSecondary,
-                fontSize = 13.sp,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Spacer(Modifier.height(24.dp))
-            Button(onClick = onBack, colors = ButtonDefaults.buttonColors(containerColor = AetherColors.Surface)) {
-                Text("← Back", color = AetherColors.TextSecondary)
+        if (bitmap != null) {
+            val imgBitmap = bitmap!!.asImageBitmap()
+
+            val scaleX = if (remoteWidth > 0) containerSize.width.toFloat() / remoteWidth else 1f
+            val scaleY = if (remoteHeight > 0) containerSize.height.toFloat() / remoteHeight else 1f
+            val fitScale = minOf(scaleX, scaleY)
+
+            val renderedW = remoteWidth * fitScale
+            val renderedH = remoteHeight * fitScale
+
+            val offsetX = (containerSize.width - renderedW) / 2f
+            val offsetY = (containerSize.height - renderedH) / 2f
+
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(containerSize, remoteWidth, remoteHeight) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                val relX = offset.x - offsetX
+                                val relY = offset.y - offsetY
+                                if (relX in 0f..renderedW && relY in 0f..renderedH && renderedW > 0 && renderedH > 0) {
+                                    val xRatio = relX / renderedW
+                                    val yRatio = relY / renderedH
+                                    val targetX = (xRatio * remoteWidth).toInt()
+                                    val targetY = (yRatio * remoteHeight).toInt()
+                                    networkManager.sendMouseMoveAbs(targetX, targetY, xRatio, yRatio)
+                                    networkManager.sendMouseButton(0, true)
+                                    networkManager.sendMouseButton(0, false)
+                                }
+                            },
+                            onLongPress = { offset ->
+                                val relX = offset.x - offsetX
+                                val relY = offset.y - offsetY
+                                if (relX in 0f..renderedW && relY in 0f..renderedH && renderedW > 0 && renderedH > 0) {
+                                    val xRatio = relX / renderedW
+                                    val yRatio = relY / renderedH
+                                    val targetX = (xRatio * remoteWidth).toInt()
+                                    val targetY = (yRatio * remoteHeight).toInt()
+                                    networkManager.sendMouseMoveAbs(targetX, targetY, xRatio, yRatio)
+                                    networkManager.sendMouseButton(1, true)
+                                    networkManager.sendMouseButton(1, false)
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(containerSize, remoteWidth, remoteHeight) {
+                        detectDragGestures { change, _ ->
+                            change.consume()
+                            val relX = change.position.x - offsetX
+                            val relY = change.position.y - offsetY
+                            if (renderedW > 0 && renderedH > 0) {
+                                val xRatio = (relX / renderedW).coerceIn(0f, 1f)
+                                val yRatio = (relY / renderedH).coerceIn(0f, 1f)
+                                val targetX = (xRatio * remoteWidth).toInt()
+                                val targetY = (yRatio * remoteHeight).toInt()
+                                networkManager.sendMouseMoveAbs(targetX, targetY, xRatio, yRatio)
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = imgBitmap,
+                    contentDescription = "Remote Desktop Frame",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(color = AetherColors.Primary)
+                Spacer(Modifier.height(16.dp))
+                Text("Connecting to Remote Desktop Stream...", color = AetherColors.TextSecondary, fontSize = 14.sp)
+            }
+        }
+
+        // Floating Overlay Controls
+        if (showControls) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter),
+                color = Color.Black.copy(alpha = 0.75f),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Filled.ArrowBack, "Back", tint = Color.White)
+                        }
+                        Text(
+                            "Remote Desktop",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = AetherColors.Primary.copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "$fps FPS • ${remoteWidth}x${remoteHeight}",
+                                color = AetherColors.Primary,
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { networkManager.sendMouseButton(0, true); networkManager.sendMouseButton(0, false) }) {
+                            Icon(Icons.Filled.Mouse, "Left Click", tint = Color.White)
+                        }
+                        IconButton(onClick = { networkManager.sendMouseButton(1, true); networkManager.sendMouseButton(1, false) }) {
+                            Icon(Icons.Filled.TouchApp, "Right Click", tint = AetherColors.PrimaryLight)
+                        }
+                        IconButton(onClick = { showKeyboard = !showKeyboard }) {
+                            Icon(Icons.Filled.Keyboard, "Toggle Keyboard", tint = if (showKeyboard) AetherColors.Primary else Color.White)
+                        }
+                        IconButton(onClick = {
+                            selectedQuality = when (selectedQuality) {
+                                "low" -> "medium"
+                                "medium" -> "high"
+                                "high" -> "low"
+                                else -> "medium"
+                            }
+                        }) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = AetherColors.Surface
+                            ) {
+                                Text(
+                                    selectedQuality.uppercase(),
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Soft Keyboard Input Overlay
+        if (showKeyboard) {
+            val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+            LaunchedEffect(showKeyboard) {
+                focusRequester.requestFocus()
+            }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(8.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = textInput,
+                        onValueChange = { newText ->
+                            if (newText.length > textInput.length) {
+                                val charTyped = newText.last().toString()
+                                networkManager.sendText(charTyped)
+                            } else if (newText.length < textInput.length) {
+                                networkManager.sendKeyDown("BACKSPACE")
+                                networkManager.sendKeyUp("BACKSPACE")
+                            }
+                            textInput = newText
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(8.dp)
+                            .focusRequester(focusRequester),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (textInput.isEmpty()) Text("Type to send keyboard input...", color = Color.Gray, fontSize = 14.sp)
+                                innerTextField()
+                            }
+                        }
+                    )
+                    IconButton(onClick = {
+                        networkManager.sendKeyDown("ENTER")
+                        networkManager.sendKeyUp("ENTER")
+                    }) {
+                        Icon(Icons.Filled.Send, "Enter", tint = AetherColors.Primary)
+                    }
+                }
             }
         }
     }
