@@ -67,6 +67,7 @@ pip install -e "$SCRIPT_DIR" --quiet
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/aethercontrol" << EOF
 #!/bin/bash
+export QT_QPA_PLATFORM="\${QT_QPA_PLATFORM:-xcb}"
 source "$VENV_DIR/bin/activate"
 exec python -m aether_server.main "\$@"
 EOF
