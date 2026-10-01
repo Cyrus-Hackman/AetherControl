@@ -66,6 +66,7 @@ class Session:
         self._send_lock = asyncio.Lock()
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._nonce: Optional[bytes] = None
+        self._pending_frames: list[tuple[MsgType, int, dict]] = []
 
     # ── Sending ───────────────────────────────────────────────────────────────
 
@@ -96,9 +97,12 @@ class Session:
         Returns None on EOF or error.
         """
         try:
+            if self._pending_frames:
+                return self._pending_frames.pop(0)
             while True:
                 frames = self._frame_buf.get_frames()
                 if frames:
+                    self._pending_frames.extend(frames[1:])
                     return frames[0]
                 chunk = await self._reader.read(65536)
                 if not chunk:

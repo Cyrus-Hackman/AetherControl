@@ -254,6 +254,7 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
     var fps by remember { mutableStateOf(0) }
     var frameCounter by remember { mutableStateOf(0) }
     var isConnecting by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     var showControls by remember { mutableStateOf(true) }
     var showKeyboard by remember { mutableStateOf(false) }
     var textInput by remember { mutableStateOf("") }
@@ -303,9 +304,17 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
                             remoteWidth = w
                             remoteHeight = h
                             isConnecting = false
+                            errorMessage = null
                             frameCounter++
                         }
                     }
+                }
+            } else if (msg.type == Protocol.MsgType.ERROR) {
+                val errorStr = msg.payload["message"] as? String
+                    ?: "Server returned error (code ${msg.payload["code"]})"
+                withContext(Dispatchers.Main) {
+                    isConnecting = false
+                    errorMessage = errorStr
                 }
             }
         }
@@ -385,6 +394,44 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit
                 )
+            }
+        } else if (errorMessage != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = AetherColors.Error,
+                    modifier = Modifier.size(48.dp)
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = errorMessage!!,
+                    color = AetherColors.TextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onBack) {
+                        Text("Go Back", color = AetherColors.TextSecondary)
+                    }
+                    Button(
+                        onClick = {
+                            errorMessage = null
+                            isConnecting = true
+                            networkManager.requestScreenStream(selectedQuality, 30)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AetherColors.Primary)
+                    ) {
+                        Text("Retry")
+                    }
+                }
             }
         } else {
             Column(

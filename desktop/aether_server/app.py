@@ -27,6 +27,7 @@ from aether_server.protocol.dispatcher import Dispatcher
 from aether_server.protocol.messages import MsgType, Capability
 from aether_server.input.uinput_backend import UInputBackend
 from aether_server.input.handlers import MouseHandler, KeyboardHandler, GamepadHandler, SensorHandler
+from aether_server.display.capture import detect_session_type
 from aether_server.display.streamer import ScreenStreamer
 from aether_server.media.controller import MediaController
 from aether_server.system.controls import SystemController
@@ -102,6 +103,17 @@ class AetherApp:
                 f"Mouse/keyboard/gamepad control requires uinput access.\n\n"
                 f"{self.uinput.error}\n\n"
                 "Screen sharing and other features will still work.",
+            )
+
+        # Check session type for Wayland screen sharing limitation
+        session_type = detect_session_type()
+        if session_type == "wayland":
+            log.warning("Wayland session detected; PipeWire screen capture is not yet supported")
+            self.main_window.show_warning(
+                "Wayland Session Detected",
+                "Screen sharing / Remote Desktop is not currently supported under Wayland sessions.\n\n"
+                "Mouse, keyboard, media, file transfer, and system controls work normally.\n"
+                "For screen sharing support, please log in using an X11 / Xorg session.",
             )
 
         # Start media controller
