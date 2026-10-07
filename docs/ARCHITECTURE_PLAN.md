@@ -20,7 +20,7 @@ AetherControl is a modular, high-performance client-server remote control ecosys
                       |  - PyQt6 System Tray / UI   |
                       |  - Linux uinput Input       |
                       |  - MPRIS2 & Systemctl       |
-                      |  - H.264 / PipeWire Video   |
+                      |  - H.264 / PyAV Video       |
                       +-----------------------------+
 ```
 
@@ -44,16 +44,37 @@ AetherControl is a modular, high-performance client-server remote control ecosys
 - [x] Linux `/dev/uinput` kernel module integration for native gamepad emulation.
 - [x] High-rate UDP fast channel for gyroscope and accelerometer motion steering.
 
-### Stage 4: Screen Sharing & Remote Desktop 🔧 (In Progress)
+### Stage 4: Screen Sharing & Remote Desktop 🟢 (Completed)
 - [x] X11 / `mss` screen capture backend.
-- [x] H.264 real-time frame encoding using PyAV / ffmpeg.
-- [x] MediaCodec hardware acceleration decoder on Android.
+- [x] H.264 real-time frame encoding via PyAV (libav/ffmpeg):
+  - Hardware encoder candidates: `h264_vaapi` (Intel/AMD), `h264_nvenc` (NVIDIA), software `libx264` fallback.
+  - Low-latency config: zerolatency, no B-frames, keyframe every ~2 s, adaptive bitrate per quality preset.
+  - Emits H.264 Annex-B byte streams (not JPEG stills); `is_keyframe` from actual packet flags.
+- [x] MediaCodec H.264 hardware decoder on Android:
+  - `TextureView` / `Surface`-backed `MediaCodec` decoder for `video/avc`, low-latency mode.
+  - Frame bytes fed directly to decoder; output rendered to `Surface` — no Bitmap intermediate.
+- [x] Remote Desktop full input:
+  - Single-finger tap → left click; long-press → right click.
+  - Single-finger drag → press-move-release click-and-drag (for text selection & window dragging).
+  - Two-finger scroll → `sendMouseScroll(dx, dy)` via `awaitPointerEventScope`.
+  - Two-finger tap (stationary) → middle click (button index 2).
+- [x] SCREEN_FRAME protocol updated: `fmt` field signals `"h264"` vs legacy `"jpeg"`; keyframe semantics documented.
 - [ ] PipeWire Wayland screen capture provider refinement.
 
-### Stage 5: Virtual & Extended Display 📋 (Planned)
-- [ ] Virtual display driver / DRM dummy display buffer for Deepin OS.
-- [ ] Multi-monitor extended workspace configuration.
-- [ ] Dynamic resolution scaling matching target mobile screen ratio.
+### Stage 5: Virtual & Extended Display 🔧 (Partial — X11 only)
+- [x] Protocol messages `DISPLAY_MODE_SET` (0x64) and `DISPLAY_MODE_STATE` (0x65) for extend/mirror toggle.
+- [x] `virtual_display.py` — xrandr-based virtual X11 output creation:
+  - CVT/fallback modeline generation, `--newmode` / `--addmode` / `--output --mode --pos`.
+  - Positioned as extended desktop to the right of the primary monitor.
+  - Teardown on session disconnect or server shutdown.
+  - Graceful degradation when xrandr / dummy output is not available (error message to client, no crash).
+- [x] Android UI: "Use as Extended Display" / "Mirror PC Screen" toggle bottom sheet.
+  - Phone screen pixel dimensions sent as virtual display resolution (1:1 coordinate mapping).
+  - Touch coordinates in extend mode map 1:1 to the virtual display's resolution.
+- [x] Server-side `_handle_display_mode` handler wired in `app.py` for `DISPLAY_MODE_SET`.
+- [ ] **Dynamic resolution scaling** matching target mobile screen ratio — not yet implemented.
+- [ ] **Wayland virtual display** — requires `wlr-randr` or compositor-specific API; not yet implemented.
+- [ ] Multi-monitor extended workspace configuration (beyond the first virtual output).
 
 ### Stage 6: System & Media Control Integration 🟢 (Completed)
 - [x] MPRIS2 D-Bus media remote control (Play/Pause, Track Next/Prev, Album Art).

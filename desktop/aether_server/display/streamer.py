@@ -56,6 +56,7 @@ class ScreenStreamer:
         quality = payload.get("quality", self._config.get("stream_default_quality", "medium"))
         resolution = payload.get("resolution", self._config.get("stream_default_resolution", "720p"))
         fps = int(payload.get("fps", self._config.get("stream_default_fps", 30)))
+        monitor = int(payload.get("monitor", 0))  # 0 = primary; set by DISPLAY_MODE_SET for extend mode
 
         self._capture = create_capture_backend()
         self._encoder = StreamEncoder(
@@ -65,7 +66,7 @@ class ScreenStreamer:
             use_hw_accel=self._config.get("stream_use_hw_accel", True),
         )
 
-        await self._capture.start()
+        await self._capture.start(monitor=monitor)
         if not self._capture.available:
             log.error("Screen capture unavailable")
             for session in self._subscribers:
@@ -79,7 +80,7 @@ class ScreenStreamer:
 
         self._running = True
         self._task = asyncio.ensure_future(self._stream_loop())
-        log.info("Screen stream pipeline started")
+        log.info("Screen stream pipeline started (monitor=%d)", monitor)
 
     async def _stop_pipeline(self) -> None:
         self._running = False
@@ -141,6 +142,7 @@ class ScreenStreamer:
                 "w": encoded.width,
                 "h": encoded.height,
                 "ts": encoded.timestamp,
+                "fmt": encoded.format,   # "h264" (Annex-B) or legacy "jpeg"
                 "data": base64.b64encode(encoded.data).decode("ascii"),
             }
 

@@ -143,6 +143,19 @@ class NetworkManager : ViewModel() {
 
     fun stopScreenStream() = send(Protocol.MsgType.SCREEN_STOP, mapOf("reason" to "user"))
 
+    /**
+     * Request the PC to switch between "mirror" (stream primary display) and
+     * "extend" (create a virtual secondary display sized to the phone screen).
+     */
+    fun sendDisplayMode(mode: String, width: Int = 0, height: Int = 0) {
+        val payload = mutableMapOf<String, Any?>("mode" to mode)
+        if (mode == "extend" && width > 0 && height > 0) {
+            payload["width"] = width
+            payload["height"] = height
+        }
+        send(Protocol.MsgType.DISPLAY_MODE_SET, payload)
+    }
+
     override fun onCleared() {
         super.onCleared()
         discovery.stopDiscovery()

@@ -66,6 +66,10 @@ object Protocol {
 
         const val SYSTEM_COMMAND: Short = 0xA0
         const val APP_LAUNCH: Short     = 0xA1
+
+        // Virtual display mode toggle (Stage 5)
+        const val DISPLAY_MODE_SET: Short   = 0x64
+        const val DISPLAY_MODE_STATE: Short = 0x65
     }
 
     object ErrorCode {

@@ -29,6 +29,7 @@ from aether_server.input.uinput_backend import UInputBackend
 from aether_server.input.handlers import MouseHandler, KeyboardHandler, GamepadHandler, SensorHandler
 from aether_server.display.capture import detect_session_type
 from aether_server.display.streamer import ScreenStreamer
+from aether_server.display import virtual_display
 from aether_server.media.controller import MediaController
 from aether_server.system.controls import SystemController
 from aether_server.clipboard.sync import ClipboardSync
@@ -144,6 +145,7 @@ class AetherApp:
         await self.server.stop()
         await self.uinput.stop()
         await self.streamer._stop_pipeline()
+        await virtual_display.remove_virtual_display()
         self._loop.stop()
 
     # ── Wiring ────────────────────────────────────────────────────────────────
@@ -164,6 +166,9 @@ class AetherApp:
         self.streamer.remove_session(session)
         self.transfer.cancel_for_session(session.session_id)
         self.main_window.remove_connected_device(session)
+        # If last client disconnects, clean up virtual display
+        if not self.streamer._subscribers:
+            await virtual_display.remove_virtual_display()
 
     async def _on_pairing_request(self, pending) -> None:
         self.main_window.show_pairing_dialog(pending)
@@ -250,4 +255,70 @@ class AetherApp:
         @d.on(MsgType.FILE_CANCEL)
         async def _(session, payload): await self.transfer.handle_cancel(session, payload)
 
+        # Virtual display mode toggle (Stage 5 — X11 only)
+        @d.on(MsgType.DISPLAY_MODE_SET)
+        async def _(session, payload): await self._handle_display_mode(session, payload)
+
         log.debug("All message handlers registered")
+
+    # ── Virtual display ────────────────────────────────────────────────────────
+
+    async def _handle_display_mode(self, session, payload: dict) -> None:
+        """
+        Handle DISPLAY_MODE_SET message from the Android client.
+
+        Expected payload fields:
+          mode:   "extend" | "mirror"
+          width:  int  — requested virtual display width  (extend mode only)
+          height: int  — requested virtual display height (extend mode only)
+        """
+        mode = payload.get("mode", "mirror")
+        session_type = detect_session_type()
+
+        if session_type == "wayland":
+            log.warning("DISPLAY_MODE_SET ignored: Wayland virtual display not yet supported")
+            await session.send_error(
+                5,
+                "Virtual extended display requires an X11 session (Wayland not yet supported)",
+            )
+            return
+
+        if mode == "extend":
+            width  = int(payload.get("width",  1080))
+            height = int(payload.get("height", 1920))
+            monitor_idx = await virtual_display.create_virtual_display(width, height)
+            if monitor_idx is None:
+                log.error("Virtual display creation failed")
+                await session.send_error(
+                    8,
+                    "Virtual display creation failed — xrandr dummy output not available",
+                )
+                return
+
+            # Restart the stream pipeline pointed at the new virtual monitor
+            await self.streamer.stop_stream(session, {"reason": "display_mode_change"})
+            await self.streamer.start_stream(
+                session, {**payload, "monitor": monitor_idx}
+            )
+
+            await session.send(
+                MsgType.DISPLAY_MODE_STATE,
+                {
+                    "mode": "extend",
+                    "virt_width": width,
+                    "virt_height": height,
+                    "monitor_idx": monitor_idx,
+                },
+            )
+            log.info("Extended display active: %dx%d on monitor %d", width, height, monitor_idx)
+
+        else:  # mirror
+            await virtual_display.remove_virtual_display()
+            # Restart the stream on the primary monitor (index 0)
+            await self.streamer.stop_stream(session, {"reason": "display_mode_change"})
+            await self.streamer.start_stream(session, payload)
+            await session.send(
+                MsgType.DISPLAY_MODE_STATE,
+                {"mode": "mirror"},
+            )
+            log.info("Mirroring primary display")

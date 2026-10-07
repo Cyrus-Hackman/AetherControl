@@ -68,6 +68,9 @@ class MsgType(IntEnum):
     DISPLAY_REMOVE  = 0x61  # Remove virtual display
     DISPLAY_CONFIG  = 0x62  # Change display properties
     DISPLAY_LIST    = 0x63  # Request list of displays
+    # Extend-vs-mirror toggle (Stage 5)
+    DISPLAY_MODE_SET   = 0x64  # Client → Server: set mode ("extend" | "mirror")
+    DISPLAY_MODE_STATE = 0x65  # Server → Client: confirm active mode + virt display info
 
     # ── Media Control ────────────────────────────────────────────────────────
     MEDIA_COMMAND   = 0x70  # play/pause/next/prev/seek/vol

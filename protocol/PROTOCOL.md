@@ -164,16 +164,66 @@ SCREEN_STOP (0x51):
   reason: str
 
 SCREEN_FRAME (0x52):  [Server → Client]
-  seq: int       — frame sequence number
-  kf: bool       — true if keyframe (I-frame)
-  w: int         — frame width
-  h: int         — frame height
-  ts: float      — capture timestamp
-  data: bytes    — base64-encoded H.264 NAL unit(s)
+  seq: int       — frame sequence number (monotonically increasing)
+  kf:  bool      — true if this packet begins an IDR (keyframe / I-frame)
+  w:   int       — frame width in pixels
+  h:   int       — frame height in pixels
+  ts:  float     — server-side capture timestamp (monotonic)
+  fmt: str       — encoding format: "h264" (default) or "jpeg" (legacy fallback)
+  data: bytes    — base64-encoded payload:
+                   When fmt="h264": one or more H.264 Annex-B NAL units
+                     (start code 0x00 0x00 0x00 0x01 prefix present).
+                     The decoder should feed the entire payload into a
+                     MediaCodec / libav decoder for "video/avc".
+                   When fmt="jpeg": raw JPEG image bytes (legacy; will be
+                     removed once all clients support H.264).
+
+  Keyframe signaling:
+    kf=true  → the payload starts with an SPS+PPS+IDR sequence.  Decoders
+               MUST be able to begin decoding from this point without any
+               prior context.  The server emits a keyframe every ~2 seconds
+               (configurable via the GOP size) and always at stream start.
+    kf=false → a P-frame (delta frame) referencing the previous frame.
+               Frames lost between two keyframes cannot be recovered;
+               the client should display the last good frame until the
+               next keyframe arrives.
+
+SCREEN_CONFIG (0x53):  [Client → Server]
+  quality: str    — new quality preset
 
 SCREEN_ACK (0x54):  [Client → Server, for adaptive quality]
   rtt_ms: float
   loss_rate: float  — 0.0 to 1.0
+```
+
+### Virtual Display Mode (0x64–0x65)
+
+```
+DISPLAY_MODE_SET (0x64):  [Client → Server]
+  mode: str     — "mirror" | "extend"
+  width:  int   — requested virtual display width  (only when mode="extend")
+  height: int   — requested virtual display height (only when mode="extend")
+
+  When mode="extend":
+    The server creates a virtual X11 output via xrandr positioned to the
+    right of the primary monitor, at the requested resolution (snapped to
+    even dimensions). Screen capture is redirected to this new output.
+    Touch coordinates from the client map 1:1 to the virtual display's
+    resolution — independent of the PC's primary monitor geometry.
+
+  When mode="mirror":
+    Any active virtual display is removed and the stream reverts to
+    capturing the PC's primary monitor.
+
+DISPLAY_MODE_STATE (0x65):  [Server → Client]
+  mode: str          — "mirror" | "extend"
+  virt_width:  int   — actual virtual display width  (extend mode only)
+  virt_height: int   — actual virtual display height (extend mode only)
+  monitor_idx: int   — internal monitor index (informational)
+
+  Limitation: virtual display creation requires an X11 session with
+  xrandr and a dummy output available (e.g. via xf86-video-dummy).
+  Wayland support is a planned future item.
 ```
 
 ### Media Control (0x70–0x71)
