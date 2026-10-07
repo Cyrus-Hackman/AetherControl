@@ -58,6 +58,15 @@ class NetworkManager(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _connectionState.value = ConnectionState.CONNECTING
             _errorMessage.value = null
+            
+            // Start the foreground service immediately while the app is definitely in the foreground.
+            // If we wait for conn.connect() to finish (which blocks waiting for desktop user to accept),
+            // the Android app might enter the background, and starting a foreground service would crash.
+            val intent = Intent(context, ConnectionService::class.java).apply {
+                putExtra("PC_NAME", computer.name)
+            }
+            ContextCompat.startForegroundService(context, intent)
+
             val conn = Connection(
                 info = computer,
                 deviceId = deviceId,
@@ -68,12 +77,6 @@ class NetworkManager(application: Application) : AndroidViewModel(application) {
             val success = conn.connect()
             if (success) {
                 _connectedComputer.value = computer
-                
-                val intent = Intent(context, ConnectionService::class.java).apply {
-                    putExtra("PC_NAME", computer.name)
-                }
-                ContextCompat.startForegroundService(context, intent)
-
                 conn.state.collect { state ->
                     _connectionState.value = state
                     if (state == ConnectionState.ERROR || state == ConnectionState.DISCONNECTED) {
@@ -84,6 +87,8 @@ class NetworkManager(application: Application) : AndroidViewModel(application) {
                 _errorMessage.value = conn.lastErrorMessage.value ?: "Could not connect to ${computer.name}. Check that AetherControl is running on the PC and both devices are on the same network."
                 _connectionState.value = ConnectionState.ERROR
                 _currentConnection = null
+                // Stop the service since connection failed
+                context.stopService(Intent(context, ConnectionService::class.java))
             }
         }
     }

@@ -26,7 +26,7 @@ class ConnectionService : Service() {
         val notification = NotificationCompat.Builder(this, "AETHER_CONNECTION")
             .setContentTitle("Connected to $pcName")
             .setContentText("AetherControl is running in the background")
-            .setSmallIcon(android.R.drawable.ic_menu_preferences) // fallback icon
+            .setSmallIcon(android.R.drawable.sym_def_app_icon) // fallback icon
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 

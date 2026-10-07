@@ -10,6 +10,7 @@
 
     <!-- Sensor permissions -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Foreground service (for background connection) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

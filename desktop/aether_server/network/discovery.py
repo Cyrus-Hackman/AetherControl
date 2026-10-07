@@ -24,6 +24,8 @@ import json
 import logging
 import os
 import socket
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -68,7 +70,7 @@ class DiscoveryServer:
         self._config = config
         self._server_id = _get_server_id()
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._thread: Optional[threading.Thread] = None
         self._zc: Optional[object] = None  # zeroconf instance
 
     def _build_announcement(self) -> bytes:
@@ -89,22 +91,17 @@ class DiscoveryServer:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.ensure_future(self._broadcast_loop())
+        self._thread = threading.Thread(target=self._broadcast_loop_sync, daemon=True)
+        self._thread.start()
         self._try_register_mdns()
         log.info("Discovery server started (UDP broadcast + mDNS)")
 
     async def stop(self) -> None:
         self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
         self._try_unregister_mdns()
         log.info("Discovery server stopped")
 
-    async def _broadcast_loop(self) -> None:
+    def _broadcast_loop_sync(self) -> None:
         """Periodically broadcast server announcement via UDP."""
         while self._running:
             try:
@@ -116,7 +113,7 @@ class DiscoveryServer:
                 sock.close()
             except OSError as exc:
                 log.debug("UDP broadcast error: %s", exc)
-            await asyncio.sleep(DISCOVERY_INTERVAL)
+            time.sleep(DISCOVERY_INTERVAL)
 
     def _try_register_mdns(self) -> None:
         """Register mDNS service via zeroconf if available."""
