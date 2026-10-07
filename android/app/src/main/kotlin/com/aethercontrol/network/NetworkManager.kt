@@ -1,7 +1,10 @@
 package com.aethercontrol.network
 
+import android.app.Application
+import android.content.Intent
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -12,7 +15,8 @@ private const val TAG = "NetworkManager"
  * NetworkManager — single source of truth for network state.
  * Used as a shared ViewModel across all screens.
  */
-class NetworkManager : ViewModel() {
+class NetworkManager(application: Application) : AndroidViewModel(application) {
+    private val context = application.applicationContext
 
     private val discovery = DiscoveryClient(viewModelScope)
 
@@ -64,8 +68,17 @@ class NetworkManager : ViewModel() {
             val success = conn.connect()
             if (success) {
                 _connectedComputer.value = computer
+                
+                val intent = Intent(context, ConnectionService::class.java).apply {
+                    putExtra("PC_NAME", computer.name)
+                }
+                ContextCompat.startForegroundService(context, intent)
+
                 conn.state.collect { state ->
                     _connectionState.value = state
+                    if (state == ConnectionState.ERROR || state == ConnectionState.DISCONNECTED) {
+                        context.stopService(Intent(context, ConnectionService::class.java))
+                    }
                 }
             } else {
                 _errorMessage.value = conn.lastErrorMessage.value ?: "Could not connect to ${computer.name}. Check that AetherControl is running on the PC and both devices are on the same network."
@@ -76,6 +89,7 @@ class NetworkManager : ViewModel() {
     }
 
     fun disconnect() {
+        context.stopService(Intent(context, ConnectionService::class.java))
         _currentConnection?.disconnect()
         _currentConnection = null
         _connectedComputer.value = null

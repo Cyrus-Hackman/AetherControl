@@ -223,6 +223,7 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
                                     }
                                 }
                             }
+                            Unit
                         } catch (e: Exception) {
                             Log.e(TAG, "Frame decode error: ${e.message}")
                         }

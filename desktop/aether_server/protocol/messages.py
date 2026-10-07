@@ -16,8 +16,8 @@ from typing import Any, Optional
 
 PROTOCOL_VERSION = 1
 PROTOCOL_MAGIC = b"AETH"           # 4-byte magic prefix on each frame
-HEARTBEAT_INTERVAL = 5.0           # seconds
-HEARTBEAT_TIMEOUT = 15.0           # seconds without heartbeat → disconnect
+HEARTBEAT_INTERVAL = 7.0           # seconds
+HEARTBEAT_TIMEOUT = 30.0           # seconds without heartbeat → disconnect
 
 
 # ──────────────────────────────────────────────────────────────────────────────

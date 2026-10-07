@@ -76,7 +76,16 @@ class ScreenStreamer:
             return
 
         w, h = self._capture.get_screen_size()
-        await self._encoder.start(w, h)
+        try:
+            await self._encoder.start(w, h)
+        except Exception as e:
+            log.error("Failed to start video encoder: %s", e)
+            await self._capture.stop()
+            for session in self._subscribers:
+                await session.send_error(
+                    5, f"Failed to start video encoder: {e}"
+                )
+            return
 
         self._running = True
         self._task = asyncio.ensure_future(self._stream_loop())

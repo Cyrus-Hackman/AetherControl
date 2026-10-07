@@ -18,6 +18,7 @@ Target characteristics:
 
 import logging
 import time
+from fractions import Fraction
 from typing import Optional
 
 import numpy as np
@@ -141,8 +142,8 @@ class StreamEncoder:
                 ctx = av.CodecContext.create(name, "w")
                 ctx.width = self._out_width
                 ctx.height = self._out_height
-                ctx.time_base = (1, self.fps)
-                ctx.framerate = (self.fps, 1)
+                ctx.time_base = Fraction(1, self.fps)
+                ctx.framerate = Fraction(self.fps, 1)
                 ctx.bit_rate = self._bitrate_kbps * 1000
                 ctx.gop_size = self._gop_size
                 # No B-frames → minimal latency
