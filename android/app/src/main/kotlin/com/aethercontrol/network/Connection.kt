@@ -142,9 +142,17 @@ class Connection(
                 return@withContext false
             }
             val serverNonce = Base64.getDecoder().decode(hello.payload["nonce"] as? String ?: "")
+            // Read the server's ECDH public key (DER SubjectPublicKeyInfo, base64-encoded)
+            val serverPubB64 = hello.payload["server_pub"] as? String ?: ""
+            if (serverPubB64.isEmpty()) {
+                _lastErrorMessage.value = "Handshake failed: server did not provide its public key."
+                return@withContext false
+            }
+            val serverPubDer = Base64.getDecoder().decode(serverPubB64)
 
             // Send PAIR_REQUEST (first time) or AUTH_RESPONSE (already paired)
             val clientNonce = java.security.SecureRandom.getSeed(32)
+            // Salt = serverNonce || clientNonce  (matches server: combined_nonce = server_nonce + client_nonce)
             val combinedNonce = serverNonce + clientNonce
 
             val pairReq = mapOf(
@@ -155,7 +163,8 @@ class Connection(
             )
             sendEncoded(Protocol.MsgType.PAIR_REQUEST, pairReq)
 
-            // Wait for PAIR_CONFIRM or PAIR_REJECT
+            // Wait for PAIR_CONFIRM or PAIR_REJECT.
+            // PAIR_CONFIRM is still protected by the zero key — do NOT set the session key yet.
             val response = readOneFrame(stream)
             if (response == null) {
                 _lastErrorMessage.value = "Handshake error: could not decode response frame from ${info.name}."
@@ -164,8 +173,10 @@ class Connection(
             return@withContext when (response.type) {
                 Protocol.MsgType.PAIR_CONFIRM -> {
                     Log.i(TAG, "Pairing confirmed")
-                    // Derive session key
-                    deriveSessionKey(combinedNonce)
+                    // Derive session key AFTER decoding PAIR_CONFIRM (which uses the zero key)
+                    if (!deriveSessionKey(serverPubDer, combinedNonce)) {
+                        return@withContext false
+                    }
                     true
                 }
                 Protocol.MsgType.PAIR_REJECT -> {
@@ -187,17 +198,79 @@ class Connection(
         }
     }
 
-    private fun deriveSessionKey(salt: ByteArray) {
-        try {
-            // In a real implementation: ECDH with server public key + HKDF
-            // For now: derive from salt using SHA-256 (placeholder until server key is cached)
-            val digest = java.security.MessageDigest.getInstance("SHA-256")
-            val key = digest.digest(clientPublicKeyBytes + salt)
+    /**
+     * Perform ECDH with the server's public key and derive the 32-byte session key
+     * via HKDF-SHA256, matching the server's ecdh_derive_session_key():
+     *
+     *   shared  = ECDH(clientPrivateKey, serverPublicKey)     // 32-byte x-coordinate
+     *   prk     = HMAC-SHA256(key = salt, data = shared)      // extract
+     *   T1      = HMAC-SHA256(key = prk,  data = info || 0x01) // expand
+     *   sessionKey = T1
+     *
+     * @param serverPubDer  DER-encoded SubjectPublicKeyInfo bytes from the HELLO frame
+     * @param salt          serverNonce || clientNonce (combined nonce)
+     * @return true on success; on failure sets _lastErrorMessage and returns false
+     */
+    private fun deriveSessionKey(serverPubDer: ByteArray, salt: ByteArray): Boolean {
+        return try {
+            val privKey = clientPrivateKey
+                ?: throw IllegalStateException("Client private key not initialised")
+
+            // Reconstruct the server's EC public key from its DER SubjectPublicKeyInfo encoding
+            val serverPub = java.security.KeyFactory.getInstance("EC")
+                .generatePublic(java.security.spec.X509EncodedKeySpec(serverPubDer))
+
+            // ECDH: obtain the raw shared secret (32 bytes for P-256)
+            val ka = javax.crypto.KeyAgreement.getInstance("ECDH")
+            ka.init(privKey)
+            ka.doPhase(serverPub, true)
+            val shared = ka.generateSecret()  // 32-byte x-coordinate (big-endian)
+
+            // HKDF-SHA256(ikm = shared, salt = combinedNonce, info = "aethercontrol-session-v1", length = 32)
+            val key = hkdfSha256(
+                ikm  = shared,
+                salt = salt,
+                info = "aethercontrol-session-v1".toByteArray(Charsets.UTF_8),
+                length = 32,
+            )
+
             codec.setSessionKey(key)
-            Log.d(TAG, "Session key derived")
+            Log.d(TAG, "Session key derived via ECDH+HKDF")
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Session key derivation failed: ${e.message}")
+            Log.e(TAG, "Secure channel setup failed: ${e.message}", e)
+            _lastErrorMessage.value = "Secure channel setup failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+            false
         }
+    }
+
+    /**
+     * RFC-5869 HKDF-SHA256 (extract + single expand step for length ≤ 32).
+     *
+     *   prk = HMAC-SHA256(key = salt, data = ikm)          // extract
+     *   T1  = HMAC-SHA256(key = prk,  data = info || 0x01) // expand
+     *   return T1[:length]
+     */
+    internal fun hkdfSha256(
+        ikm: ByteArray,
+        salt: ByteArray,
+        info: ByteArray,
+        length: Int = 32,
+    ): ByteArray {
+        require(length <= 32) { "hkdfSha256: length must be ≤ 32 (single T1 block)" }
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+
+        // Extract: PRK = HMAC-SHA256(key=salt, data=ikm)
+        mac.init(javax.crypto.spec.SecretKeySpec(salt, "HmacSHA256"))
+        val prk = mac.doFinal(ikm)
+
+        // Expand T1 = HMAC-SHA256(key=PRK, data=info || 0x01)
+        mac.init(javax.crypto.spec.SecretKeySpec(prk, "HmacSHA256"))
+        mac.update(info)
+        mac.update(0x01.toByte())
+        val t1 = mac.doFinal()
+
+        return if (length == 32) t1 else t1.copyOf(length)
     }
 
     private fun readOneFrame(stream: InputStream): AetherMessage? {
@@ -234,12 +307,28 @@ class Connection(
 
     private suspend fun receiveLoop(stream: InputStream) = withContext(Dispatchers.IO) {
         val buf = ByteArray(65536)
+        // FIX 2 (Android): track consecutive HMAC decode failures right after connection
+        var consecutiveDecodeFailures = 0
+        val maxDecodeFailures = 5
         while (running.get()) {
             try {
                 val n = stream.read(buf)
                 if (n <= 0) break
                 frameBuffer.feed(buf.copyOf(n))
-                frameBuffer.getFrames().forEach { msg ->
+                val frames = frameBuffer.getFrames()
+                if (frames.isEmpty() && frameBuffer.hadRecentHmacFailure()) {
+                    consecutiveDecodeFailures++
+                    if (consecutiveDecodeFailures >= maxDecodeFailures) {
+                        Log.e(TAG, "$maxDecodeFailures consecutive HMAC failures — secure channel error")
+                        _lastErrorMessage.value = "Secure channel error — keys may be mismatched. Please reconnect."
+                        _state.value = ConnectionState.ERROR
+                        running.set(false)
+                        break
+                    }
+                } else if (frames.isNotEmpty()) {
+                    consecutiveDecodeFailures = 0
+                }
+                frames.forEach { msg ->
                     when (msg.type) {
                         Protocol.MsgType.HEARTBEAT -> sendEncoded(Protocol.MsgType.HEARTBEAT, mapOf("ts" to System.currentTimeMillis()))
                         else -> {
@@ -254,7 +343,9 @@ class Connection(
             }
         }
         Log.i(TAG, "Receive loop ended")
-        _state.value = ConnectionState.DISCONNECTED
+        if (_state.value != ConnectionState.ERROR) {
+            _state.value = ConnectionState.DISCONNECTED
+        }
         running.set(false)
     }
 

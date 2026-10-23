@@ -16,7 +16,7 @@ import time
 from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
 
-from aether_server.protocol.codec import Codec, FrameBuffer, ProtocolError
+from aether_server.protocol.codec import Codec, FrameBuffer, ProtocolError, HmacFailureThreshold
 from aether_server.protocol.messages import (
     MsgType, ErrorCode, Capability,
     HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
@@ -95,6 +95,10 @@ class Session:
         """
         Read one complete frame from the TCP stream.
         Returns None on EOF or error.
+
+        FIX 2: If FrameBuffer raises HmacFailureThreshold, sends an ERROR
+        message to the client so the phone shows a visible error instead of
+        spinning forever, then returns None to trigger session close.
         """
         try:
             if self._pending_frames:
@@ -108,6 +112,18 @@ class Session:
                 if not chunk:
                     return None
                 self._frame_buf.feed(chunk)
+        except HmacFailureThreshold as exc:
+            log.error("[%s] HMAC failure threshold reached: %s", self.session_id, exc)
+            # Best-effort: send error to phone before closing
+            try:
+                await self.send_error(
+                    ErrorCode.AUTH_FAILED,
+                    "Secure channel verification failed \u2014 please reconnect",
+                )
+            except Exception:
+                pass
+            await self.close()
+            return None
         except (OSError, asyncio.IncompleteReadError, ProtocolError) as exc:
             log.debug("[%s] Read error: %s", self.session_id, exc)
             return None

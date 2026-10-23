@@ -52,18 +52,23 @@ class H264Decoder(private val width: Int, private val height: Int, private val s
 
     private var codec: MediaCodec? = null
     private var configured = false
+    // FIX 3: Gate feeding until first keyframe so delta frames don't corrupt output
+    private var seenKeyframe = false
 
     fun start() {
         try {
             val format = MediaFormat.createVideoFormat(MIME_H264, width, height).apply {
                 // Low-latency flag (API 30+); ignored gracefully on older devices
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                // FIX 3: 2 MiB input buffer — keyframes at 720p are ~300 KB, larger at 1080p
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024)
             }
             val mc = MediaCodec.createDecoderByType(MIME_H264)
             mc.configure(format, surface, null, 0)
             mc.start()
             codec = mc
             configured = true
+            seenKeyframe = false
             Log.i(TAG, "MediaCodec H264 decoder started ($width×$height)")
         } catch (e: Exception) {
             Log.e(TAG, "MediaCodec init failed: ${e.message}")
@@ -78,8 +83,15 @@ class H264Decoder(private val width: Int, private val height: Int, private val s
     fun feedFrame(data: ByteArray, presentationTimeUs: Long, isKeyframe: Boolean) {
         val mc = codec ?: return
         if (!configured) return
+        // FIX 3: Skip delta frames until we've received the first keyframe
+        if (isKeyframe) seenKeyframe = true
+        if (!seenKeyframe) {
+            Log.v(TAG, "Dropping delta frame before first keyframe")
+            return
+        }
         try {
-            val inputIdx = mc.dequeueInputBuffer(0)
+            // FIX 3: Use 10 ms timeout instead of 0 so P-frames aren't dropped under load
+            val inputIdx = mc.dequeueInputBuffer(10_000)
             if (inputIdx >= 0) {
                 val buf = mc.getInputBuffer(inputIdx) ?: return
                 buf.clear()
@@ -107,6 +119,7 @@ class H264Decoder(private val width: Int, private val height: Int, private val s
         } catch (_: Exception) {}
         codec = null
         configured = false
+        seenKeyframe = false
         Log.i(TAG, "MediaCodec H264 decoder stopped")
     }
 }
@@ -171,6 +184,16 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
         }
     }
 
+    // FIX 2/3: 8-second timeout — if no SCREEN_FRAME or ERROR arrives after requesting
+    // the stream, show a visible error+Retry instead of an endless spinner.
+    LaunchedEffect(selectedQuality) {
+        delay(8_000)
+        if (isConnecting && errorMessage == null) {
+            isConnecting = false
+            errorMessage = "No video stream received. The server may still be starting up, or there is a connection issue. Tap Retry to try again."
+        }
+    }
+
     // ── Frame collection: H.264 path ──────────────────────────────────────
     LaunchedEffect(Unit) {
         networkManager.messagesFlow.collect { msg ->
@@ -189,7 +212,8 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
 
                             if (fmt == "h264") {
                                 // ── H.264 / MediaCodec path ───────────────
-                                // Re-init decoder if dimensions changed
+                                // FIX 3: Create decoder lazily from the first real frame's
+                                // actual dimensions, not the default 1920×1080 guess.
                                 if (w != decoderWidth || h != decoderHeight) {
                                     currentDecoder?.stop()
                                     val surface = decoderSurface
@@ -287,20 +311,19 @@ fun RemoteDesktopScreen(networkManager: NetworkManager, onBack: () -> Unit) {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                             val surf = Surface(st)
                             decoderSurface = surf
-                            // If we already know the dimensions, start the decoder immediately
-                            if (remoteWidth > 0 && remoteHeight > 0 && surf.isValid) {
-                                val dec = H264Decoder(remoteWidth, remoteHeight, surf)
-                                dec.start()
-                                currentDecoder = dec
-                                decoderWidth  = remoteWidth
-                                decoderHeight = remoteHeight
-                            }
+                            // FIX 3: Don't pre-create decoder with default 1920×1080 —
+                            // create lazily on the first real frame so dimensions are correct.
+                            // (decoderWidth/decoderHeight start at 0; frame handler checks them)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             currentDecoder?.stop()
                             currentDecoder = null
                             decoderSurface = null
+                            // FIX 3: Reset dimensions so the decoder is fully rebuilt when
+                            // the surface returns (e.g. app is backgrounded then foregrounded)
+                            decoderWidth  = 0
+                            decoderHeight = 0
                             return true
                         }
                         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {

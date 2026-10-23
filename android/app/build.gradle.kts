@@ -61,4 +61,8 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.msgpack:msgpack-core:0.9.8")
+
+    // Unit tests (JVM — no Android device needed)
+    testImplementation("junit:junit:4.13.2")
 }
+

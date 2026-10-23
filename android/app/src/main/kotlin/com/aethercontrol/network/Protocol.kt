@@ -50,6 +50,7 @@ object Protocol {
         const val SCREEN_FRAME: Short   = 0x52
         const val SCREEN_CONFIG: Short  = 0x53
         const val SCREEN_ACK: Short     = 0x54
+        const val SCREEN_KEYFRAME_REQUEST: Short = 0x55  // client requests an immediate IDR keyframe
 
         const val MEDIA_COMMAND: Short  = 0x70
         const val MEDIA_STATE: Short    = 0x71
@@ -243,12 +244,18 @@ class AetherCodec {
  */
 class FrameBuffer(private val codec: AetherCodec) {
     private val buffer = java.io.ByteArrayOutputStream()
+    // FIX 2: track whether the last getFrames() call dropped frames due to HMAC mismatches
+    private var _hadHmacFailure = false
 
     fun feed(data: ByteArray) {
         buffer.write(data)
     }
 
+    /** Returns true if the most-recent getFrames() call discarded at least one frame for HMAC failure. */
+    fun hadRecentHmacFailure(): Boolean = _hadHmacFailure
+
     fun getFrames(): List<AetherMessage> {
+        _hadHmacFailure = false
         val frames = mutableListOf<AetherMessage>()
         val bytes = buffer.toByteArray()
         buffer.reset()
@@ -277,7 +284,13 @@ class FrameBuffer(private val codec: AetherCodec) {
                 break
             }
             val frame = bytes.slice(pos until pos + total).toByteArray()
-            codec.decode(frame)?.let { frames.add(it) }
+            val msg = codec.decode(frame)
+            if (msg != null) {
+                frames.add(msg)
+            } else {
+                // decode() returns null on HMAC mismatch or parse error
+                _hadHmacFailure = true
+            }
             pos += total
         }
         return frames

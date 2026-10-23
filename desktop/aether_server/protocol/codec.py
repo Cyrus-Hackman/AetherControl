@@ -33,6 +33,14 @@ class ProtocolError(Exception):
     pass
 
 
+class HmacFailureThreshold(Exception):
+    """Raised when too many consecutive HMAC failures occur on one session."""
+    pass
+
+
+HMAC_FAILURE_THRESHOLD = 5  # consecutive failures before aborting
+
+
 class Codec:
     """
     Encode and decode AetherControl protocol frames.
@@ -131,17 +139,26 @@ class FrameBuffer:
     """
     Stateful buffer that reassembles complete frames from a TCP byte stream.
     Call feed() with incoming bytes; get_frames() returns complete decoded frames.
+
+    FIX 2: After HMAC_FAILURE_THRESHOLD consecutive HMAC failures, raises
+    HmacFailureThreshold so the session can send an ERROR and close cleanly
+    instead of silently dropping frames until the heartbeat timeout fires.
     """
 
     def __init__(self, codec: Codec) -> None:
         self._codec = codec
         self._buf = bytearray()
+        self._consecutive_hmac_failures = 0
 
     def feed(self, data: bytes) -> None:
         self._buf.extend(data)
 
     def get_frames(self) -> list[tuple[MsgType, int, dict[str, Any]]]:
-        """Extract all complete frames from the buffer."""
+        """Extract all complete frames from the buffer.
+
+        Raises HmacFailureThreshold if HMAC_FAILURE_THRESHOLD consecutive
+        failures are detected (key mismatch scenario).
+        """
         frames = []
         while True:
             if len(self._buf) < HEADER_SIZE:
@@ -171,7 +188,21 @@ class FrameBuffer:
             try:
                 decoded = self._codec.decode(frame_bytes)
                 frames.append(decoded)
+                self._consecutive_hmac_failures = 0  # reset on success
             except ProtocolError as exc:
-                log.warning("Dropped malformed frame: %s", exc)
+                if "HMAC" in str(exc):
+                    self._consecutive_hmac_failures += 1
+                    log.warning(
+                        "Dropped malformed frame: %s (consecutive HMAC failures: %d/%d)",
+                        exc, self._consecutive_hmac_failures, HMAC_FAILURE_THRESHOLD,
+                    )
+                    if self._consecutive_hmac_failures >= HMAC_FAILURE_THRESHOLD:
+                        raise HmacFailureThreshold(
+                            f"Secure channel verification failed after "
+                            f"{self._consecutive_hmac_failures} consecutive HMAC errors — "
+                            f"please reconnect"
+                        )
+                else:
+                    log.warning("Dropped malformed frame: %s", exc)
 
         return frames
